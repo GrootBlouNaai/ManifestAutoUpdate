@@ -1,147 +1,143 @@
-# Steam 清单仓库
+# Steam Manifest Repository
 
-## 项目简介
+## Project Overview
 
-* 使用`Actions`自动爬取`Steam`游戏清单
+* Automatically crawl `Steam` game manifests using `Actions`
 
-## 项目结构
+## Project Structure
 
-* `main`分支
-    * `main.py`: 爬取清单主程序
-        * `-c, --credential-location`: 存放账户凭据的路径,默认为`data/client`
-        * `-l, --level`: 日志等级,默认为`INFO`
-        * `-p, --pool-num`: 同时爬取账号数量,默认为`8`
-        * `-r, --retry-num`: 失败或超时重试次数,默认为`3`
-        * `-t, --update-wait-time`: 账号再次爬取间隔时间,单位秒,默认`86400`
-        * `-k, --key`: 用于`users.json`解密的密钥
-            * 提交远程仓库后如果重新克隆或使用`Actions`运行需要指定密钥才能解密
-            * 手动解密: 把密钥保存到`KEY`文件,安装`git-crypt`,切换到data分支运行命令`git-crypt unlock KEY`
-        * `-i, --init-only`: 仅初始化,不会去爬取清单
-        * `-C, --cli`: 登录失败后会进入交互式登录
-        * `-P, --no-push`: 阻止爬取完毕后自动push
-        * `-u, --update`: 通过获取仓库所有app信息,来判断爬取的账号
-        * `-a, --app-id`: 限定爬取的appid,可指定多个,空格分隔
-        * `-U, --users`: 限定爬取的账号,可指定多个,空格分隔
-    * `storage.py`: 使用清单一键入库
-        * `-r, --repo`: 指定仓库
-        * `-a, --app-id`: 游戏id
-        * `-p, --app-path`: 导入本仓库app分支格式的目录
-    * `apps.py`: 导出仓库所有游戏信息到`apps.xlsx`
-        * `-r, --repo`: 指定仓库
-        * `-o, --output`: 保存目录
-    * `merge.py`: 用于`Actions`自动合并`pr`
-        * `-t, --token`: 个人访问令牌
-        * `-l, --level`: 日志等级,默认为`INFO`
-    * `push.py`: 用于推送分支
-    * `pr.py`: 用于pr分支
-        * `-r, --repo`: 指定仓库
-        * `-t, --token`: 个人访问令牌
-* `data`分支: 用于存放账号数据,第一次运行程序初始化后会自动将其签出到`data`目录
-    * `data/client`: 用于存放账号凭证文件和`cm`服务器信息的目录,需要将账号`ssfn`文件放在该目录
-    * `data/users.json`: 用于存放账号和密码
-        * 格式为: `{"账号": ["密码", "ssfnxxxx"], "账号": ["密码", null], ...}`
-        * 没有`ssfn`需要填`null`
-    * `data/appinfo.json`: 用于存放`appid`对应的`清单id`
-        * 格式为: `{"11111": "清单id", ...}`
-    * `data/userinfo.json`: 用于存放账户拥有的`appid`信息和是否被禁用等信息
-        * 格式为: `{"账号": {"app": [11111, 22222, ...], "update": 1673018145, "enable": true, "status": 63}, ...}`
-            * `update`: 上次更新时间戳
-            * `enable`: 是否被禁用
-            * `status`: 登录失败的原因 - [EResult](https://partner.steamgames.com/doc/api/steam_api#EResult)
-    * `data/.gitattributes`: 记录`git-crypt`需要加密的文件
-        * 默认加密: `users.json client/*.key 2fa.json`
-    * `data/2fa.json`: 记录账号`2fa`信息
-        * 格式: `{"账号": "shared_secret", ...}`
-* 以`appid`为名称的分支: 该分支用于存放清单和密钥文件
-    * `depots/xxx`: 程序运行后如果该`app`有新的清单会从远程拉取对应`appid`分支,不存在则会使用`main`分支的第一次提交创建一个空的`appid`分支,使用`worktree`
-      将其签出到`depots/对应appid分支`目录,例如`depots/11111`
-        * `depots/xxx/仓库id_清单id.manifest`: 清单文件
-        * `config.vdf`: 密钥文件,其格式参考`Steam/config/config.vdf`
+* `main` branch
+    * `main.py`: Main program for crawling manifests
+        * `-c, --credential-location`: Path to store account credentials, default is `data/client`
+        * `-l, --level`: Log level, default is `INFO`
+        * `-p, --pool-num`: Number of accounts to crawl simultaneously, default is `8`
+        * `-r, --retry-num`: Number of retries for failures or timeouts, default is `3`
+        * `-t, --update-wait-time`: Interval time for re-crawling accounts, in seconds, default is `86400`
+        * `-k, --key`: Key for decrypting `users.json`
+            * Required if re-cloning after pushing to remote or running with `Actions`
+            * Manual decryption: Save the key to `KEY` file, install `git-crypt`, switch to `data` branch and run `git-crypt unlock KEY`
+        * `-i, --init-only`: Only initialize, does not crawl manifests
+        * `-C, --cli`: Enter interactive login if login fails
+        * `-P, --no-push`: Prevent automatic push after crawling
+        * `-u, --update`: Determine accounts to crawl by fetching all app information from the repository
+        * `-a, --app-id`: Limit crawling to specified app IDs, multiple IDs can be specified, separated by spaces
+        * `-U, --users`: Limit crawling to specified accounts, multiple accounts can be specified, separated by spaces
+    * `storage.py`: Import manifests into the repository
+        * `-r, --repo`: Specify repository
+        * `-a, --app-id`: Game ID
+        * `-p, --app-path`: Directory in the repository's app branch format
+    * `apps.py`: Export all game information from the repository to `apps.xlsx`
+        * `-r, --repo`: Specify repository
+        * `-o, --output`: Save directory
+    * `merge.py`: Automatically merge `pr` for `Actions`
+        * `-t, --token`: Personal access token
+        * `-l, --level`: Log level, default is `INFO`
+    * `push.py`: Push branches
+    * `pr.py`: Create pull requests for branches
+        * `-r, --repo`: Specify repository
+        * `-t, --token`: Personal access token
+* `data` branch: Used for storing account data, automatically checked out to `data` directory after first run initialization
+    * `data/client`: Directory for storing account credential files and `cm` server information, place account `ssfn` files here
+    * `data/users.json`: Stores account and password
+        * Format: `{"account": ["password", "ssfnxxxx"], "account": ["password", null], ...}`
+        * Fill `null` if no `ssfn`
+    * `data/appinfo.json`: Stores `appid` corresponding to `manifest id`
+        * Format: `{"11111": "manifest id", ...}`
+    * `data/userinfo.json`: Stores account's owned `appid` information and whether it is disabled, etc.
+        * Format: `{"account": {"app": [11111, 22222, ...], "update": 1673018145, "enable": true, "status": 63}, ...}`
+            * `update`: Last update timestamp
+            * `enable`: Whether it is disabled
+            * `status`: Reason for login failure - [EResult](https://partner.steamgames.com/doc/api/steam_api#EResult)
+    * `data/.gitattributes`: Records files to be encrypted by `git-crypt`
+        * Default encryption: `users.json client/*.key 2fa.json`
+    * `data/2fa.json`: Records account `2fa` information
+        * Format: `{"account": "shared_secret", ...}`
+* Branches named after `appid`: Used for storing manifests and key files
+    * `depots/xxx`: If the `app` has new manifests after program run, it will pull the corresponding `appid` branch from remote, or create an empty `appid` branch using the first commit of `main` branch, and check it out to `depots/corresponding appid branch` directory, e.g., `depots/11111`
+        * `depots/xxx/repository_id_manifest_id.manifest`: Manifest file
+        * `config.vdf`: Key file, refer to `Steam/config/config.vdf` for format
             * ```vdf
               "depots"
               {
-                  "仓库id"
+                  "repository_id"
                   {
-                      "DecryptionKey" "仓库密钥"
+                      "DecryptionKey" "repository_key"
                   }
               }
               ```
-* `tag`: 标记每一个的清单的提交
-    * 命名格式: `仓库id_清单id`
-    * 用于过滤已爬取的清单
+* `tag`: Marks each manifest commit
+    * Naming format: `repository_id_manifest_id`
+    * Used for filtering already crawled manifests
 
-## 运行流程
+## Running Process
 
 1. `.github/workflows/CI.yml`
-    * 使用`Actions`定期爬取清单
-2. 开启多线程同时登录多个账号爬取清单,直到所有账号都被爬取完毕
-    * 判断账号是否禁用
-    * 判断账号距离上次爬取时间是否大于可爬取间隔
-    * 获取账号所有可爬取的清单，使用`tag`过滤已爬取的清单
-3. 爬取结束后调用`push.py`上传`分支`和`tag`,并推送`data`分支
+    * Use `Actions` to periodically crawl manifests
+2. Enable multi-threading to log in and crawl manifests for multiple accounts simultaneously until all accounts are crawled
+    * Check if the account is disabled
+    * Check if the time since the last crawl is greater than the crawl interval
+    * Fetch all crawlable manifests for the account, use `tag` to filter already crawled manifests
+3. After crawling, call `push.py` to upload `branches` and `tags`, and push `data` branch
 
-## 如何部署
+## How to Deploy
 
-1. fork本仓库(使用`Actions`初始化可跳过以下步骤)
-2. 安装git,并配置你的`github`账号
-3. 克隆你fork的仓库
-    * `git clone https://github.com/你的名称/ManifestAutoUpdate --recurse-submodules --depth=1`
-        * `--recurse-submodules`: 克隆子模块
-        * `--depth=1`: 浅克隆
-4. 安装依赖
+1. Fork this repository (skip the following steps if initializing with `Actions`)
+2. Install git and configure your `github` account
+3. Clone your forked repository
+    * `git clone https://github.com/your_name/ManifestAutoUpdate --recurse-submodules --depth=1`
+        * `--recurse-submodules`: Clone submodules
+        * `--depth=1`: Shallow clone
+4. Install dependencies
     * `pip install -r requirements.txt`
-5. 运行程序
+5. Run the program
     * `python main.py`
-6. 初始化
-    * 第一次运行程序会进行初始化操作
-    * 初始化会生成`data`分支,使用`worktree`签出到`data`目录
-    * 生成密钥用于加密`users.json`
-        * 密钥生成路径位于: `data/KEY`
-        * 同时程序会输出密钥的十六进制字符串,需要将其存放到github仓库密钥,名称保存为`KEY`
-            * 打开你的仓库 -> `Settings` -> `Secrets` -> `Actions` -> `New repository secret`
-            * 或者在你的仓库地址后面加上`/settings/secrets/actions/new`
-    * 增加账号密码到`data/users.json`:
-        * 之后如果需要使用`Actions`需要将其推送到远程仓库
-            * 再次运行程序,程序结束时会自动推送到`data`分支
-            * 手动推送步骤如下:
-                1. `cd data`: 切换到`data`目录
-                2. `git add -u`: 增加修改的内容
-                3. `git commit -m "update"`: 提交修改
-                4. `git push origin data`: 推送到远程`data`分支
-7. Actions初始化和运行
-    * 配置`workflow`读写权限: 仓库 -> `Settings` -> `Actions` -> `General` -> `Workflow permissions`
-      -> `Read and write permissions`
-    * 仓库打开`Actions`选择对应的`Workflow`点击`Run workflow`选择好参数运行
-        * `INIT`: 初始化
-            * `users`: 账号,可指定多个,逗号分隔
-            * `password`: 密码,可指定多个,逗号分隔
-            * `ssfn`: [ssfn](https://ssfnbox.com/),需要提前上传该文件到`credential_location`目录,可指定多个,逗号分隔
-            * `2fa`: [shared_secret](https://zhuanlan.zhihu.com/p/28257212),可指定多个,逗号分隔
-            * `update`: 是否更新账号
-            * `update_users`: 需要更新的账号
-            * 第一次初始化后记得保存密钥到仓库密钥,不然下次运行会因为没有密钥而报错,然后记得删除本次`Workflow`运行结果,防止密钥泄露,或者使用本地初始化更安全
-        * `CI`: 爬取所有账号
-        * `PR`: 自动`pr`清单到指定仓库
-            * 由于`Github`
-              禁止`Actions`[递归创建pr](https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow)
-              ,所以需要创建一个[个人访问令牌](https://github.com/settings/tokens/new)保存到仓库密钥`GITHUB_TOKEN`
-            * `repo`: 仓库地址
-        * `MERGE`: 自动检查`pr`并合并清单
-        * `UPDATE`: 加了`-u`参数
+6. Initialize
+    * The first run of the program will perform initialization
+    * Initialization will generate the `data` branch and check it out to the `data` directory using `worktree`
+    * Generate a key for encrypting `users.json`
+        * The key generation path is: `data/KEY`
+        * The program will also output the hexadecimal string of the key, which needs to be stored in the github repository secret, named `KEY`
+            * Open your repository -> `Settings` -> `Secrets` -> `Actions` -> `New repository secret`
+            * Or add `/settings/secrets/actions/new` to your repository URL
+    * Add account passwords to `data/users.json`:
+        * If you need to use `Actions` later, push it to the remote repository
+            * Re-run the program, it will automatically push to the `data` branch at the end of the program
+            * Manual push steps:
+                1. `cd data`: Switch to `data` directory
+                2. `git add -u`: Add modified content
+                3. `git commit -m "update"`: Commit changes
+                4. `git push origin data`: Push to remote `data` branch
+7. Initialize and run with Actions
+    * Configure `workflow` read and write permissions: Repository -> `Settings` -> `Actions` -> `General` -> `Workflow permissions` -> `Read and write permissions`
+    * Open `Actions` in the repository, select the corresponding `Workflow`, click `Run workflow`, and select parameters to run
+        * `INIT`: Initialize
+            * `users`: Accounts, multiple accounts can be specified, separated by commas
+            * `password`: Passwords, multiple passwords can be specified, separated by commas
+            * `ssfn`: [ssfn](https://ssfnbox.com/), upload this file to `credential_location` directory in advance, multiple files can be specified, separated by commas
+            * `2fa`: [shared_secret](https://zhuanlan.zhihu.com/p/28257212), multiple secrets can be specified, separated by commas
+            * `update`: Whether to update accounts
+            * `update_users`: Accounts to be updated
+            * After the first initialization, remember to save the key to the repository secret, otherwise it will report an error next time due to the lack of a key, and then remember to delete the results of this `Workflow` run to prevent key leakage, or use local initialization for more security
+        * `CI`: Crawl all accounts
+        * `PR`: Automatically `pr` manifests to the specified repository
+            * Since `Github` prohibits `Actions` [recursively creating pr](https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow), you need to create a [personal access token](https://github.com/settings/tokens/new) and save it to the repository secret `GITHUB_TOKEN`
+            * `repo`: Repository address
+        * `MERGE`: Automatically check `pr` and merge manifests
+        * `UPDATE`: Add `-u` parameter
 
-## 如何pr清单
+## How to PR Manifests
 
-* 本项目使用`Actions`定期检查并合并清单，是否合并成功请在`Actions`运行完后查看对应分支
+* This project uses `Actions` to periodically check and merge manifests, check if the merge is successful after `Actions` run
 
-1. 完成部署本项目并爬取清单
-2. 打开你要`pr`清单的分支，点击`Compare & pull request`
-3. 点击`Create pull request`创建`pr`
+1. Complete the deployment of this project and crawl manifests
+2. Open the branch you want to `pr` manifests to, click `Compare & pull request`
+3. Click `Create pull request` to create a `pr`
 
-## Telegram交流群
+## Telegram Discussion Group
 
 * [SteamManifestShare](https://t.me/SteamManifestShare)
 
-## 仓库游戏查看
+## Repository Game View
 
 1. [apps.xlsx](https://github.com/wxy1343/ManifestAutoUpdate/raw/data/apps.xlsx)
-2. [在线查看](https://docs.google.com/spreadsheets/d/1tS-Tar11TAqnlaeh4c7kHJq-vHF8QiQ-EtcEy5NO8a8)
+2. [Online View](https://docs.google.com/spreadsheets/d/1tS-Tar11TAqnlaeh4c7kHJq-vHF8QiQ-EtcEy5NO8a8)
