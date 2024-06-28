@@ -317,247 +317,359 @@ class ManifestAutoUpdate:
                 self.log.error(e)
                 return
 
-    def login(self, steam, username, password):
-        self.log.info(f'Logging in to account {username}!')
-        shared_secret = self.two_factor.get(username)
-        steam.username = username
-        result = steam.relogin()
-        wait = 1
-        if result != EResult.OK:
-            if result != EResult.Fail:
-                self.log.warning(f'User {username}: Relogin failure reason: {result.__repr__()}')
-            if result == EResult.RateLimitExceeded:
-                with lock:
-                    time.sleep(wait)
+   def login(self, steam, username, password):
+    """
+    Logs in the user to the Steam client.
+
+    This function handles the login process for a given user, including handling two-factor authentication,
+    rate limiting, and other potential login issues. It also updates the user's status in the user_info
+    dictionary based on the login result.
+
+    Args:
+        steam (MySteamClient): The Steam client instance to use for logging in.
+        username (str): The username of the account to log in.
+        password (str): The password of the account to log in.
+
+    Returns:
+        EResult: The result of the login attempt, as an EResult enum value.
+    """
+    self.log.info(f'Logging in to account {username}!')
+    
+    # Retrieve the shared secret for two-factor authentication, if available
+    shared_secret = self.two_factor.get(username)
+    
+    # Set the username for the Steam client instance
+    steam.username = username
+    
+    # Attempt to relogin the user using the Steam client
+    result = steam.relogin()
+    
+    # Initialize the wait time before retrying the login
+    wait = 1
+    
+    # Check if the relogin attempt was not successful
+    if result != EResult.OK:
+        # Log a warning if the relogin failed for a reason other than a general failure
+        if result != EResult.Fail:
+            self.log.warning(f'User {username}: Relogin failure reason: {result.__repr__()}')
+        
+        # Handle rate limiting by waiting before attempting to login again
+        if result == EResult.RateLimitExceeded:
+            with lock:
+                time.sleep(wait)
+        
+        # Attempt to login with the provided username and password, including two-factor code if available
+        result = steam.login(username, password, steam.login_key, two_factor_code=generate_twofactor_code(
+            base64.b64decode(shared_secret)) if shared_secret else None)
+    
+    # Initialize the retry count for login attempts
+    count = self.retry_num
+    
+    # Loop until the login is successful or the retry count is exhausted
+    while result != EResult.OK and count:
+        # Use the command line to interactively log in if the CLI option is enabled
+        if self.cli:
+            with lock:
+                self.log.warning(f'Using the command line to interactively log in to account {username}!')
+                result = steam.cli_login(username, password)
+            break
+        
+        # Handle rate limiting by waiting before attempting to login again
+        elif result == EResult.RateLimitExceeded:
+            if not count:
+                break
+            with lock:
+                time.sleep(wait)
             result = steam.login(username, password, steam.login_key, two_factor_code=generate_twofactor_code(
                 base64.b64decode(shared_secret)) if shared_secret else None)
-        count = self.retry_num
-        while result != EResult.OK and count:
-            if self.cli:
-                with lock:
-                    self.log.warning(f'Using the command line to interactively log in to account {username}!')
-                    result = steam.cli_login(username, password)
-                break
-            elif result == EResult.RateLimitExceeded:
-                if not count:
-                    break
-                with lock:
-                    time.sleep(wait)
-                result = steam.login(username, password, steam.login_key, two_factor_code=generate_twofactor_code(
-                    base64.b64decode(shared_secret)) if shared_secret else None)
-            elif result in (EResult.AccountLogonDenied, EResult.AccountDisabled,
-                            EResult.AccountLoginDeniedNeedTwoFactor, EResult.PasswordUnset):
-                logging.warning(f'User {username} has been disabled!')
-                self.user_info[username]['enable'] = False
-                self.user_info[username]['status'] = result
-                break
-            wait += 1
-            count -= 1
-            self.log.error(f'User {username}: Login failure reason: {result.__repr__()}')
-        if result == EResult.OK:
-            self.log.info(f'User {username} login successfully!')
-        else:
-            self.log.error(f'User {username}: Login failure reason: {result.__repr__()}')
-        return result
-
-    def async_task(self, cdn, app_id, depot_id, manifest_gid):
-        self.init_app_repo(app_id)
-        manifest_path = self.ROOT / f'depots/{app_id}/{depot_id}_{manifest_gid}.manifest'
-        if manifest_path.exists():
-            self.log.debug(f'manifest_path exists: {manifest_path}')
-            app_repo = git.Repo(self.ROOT / f'depots/{app_id}')
-            try:
-                manifest_commit = app_repo.git.rev_list('-1', str(app_id),
-                                                        f'{depot_id}_{manifest_gid}.manifest').strip()
-            except git.exc.GitCommandError:
-                manifest_path.unlink(missing_ok=True)
-            else:
-                self.log.debug(f'manifest_commit: {manifest_commit}')
-                return Result(result=True, app_id=app_id, depot_id=depot_id, manifest_gid=manifest_gid,
-                              manifest_commit=manifest_commit)
-        return get_manifest(cdn, app_id, depot_id, manifest_gid, True, self.ROOT, self.retry_num)
-
-    def get_manifest(self, username, password, sentry_name=None):
-        with lock:
-            if username not in self.user_info:
-                self.user_info[username] = {}
-                self.user_info[username]['app'] = []
-            if 'update' not in self.user_info[username]:
-                self.user_info[username]['update'] = 0
-            if 'enable' not in self.user_info[username]:
-                self.user_info[username]['enable'] = True
-            if not self.user_info[username]['enable']:
-                logging.warning(f'User {username} is disabled!')
-                return
-        t = self.user_info[username]['update'] + self.update_wait_time - time.time()
-        if t > 0:
-            logging.warning(f'User {username} interval from next update: {int(t)}s!')
-            return
-        sentry_path = None
-        if sentry_name:
-            sentry_path = Path(
-                self.credential_location if self.credential_location else MySteamClient.credential_location) / sentry_name
-        self.log.debug(f'User {username} sentry_path: {sentry_path}')
-        steam = MySteamClient(str(self.credential_location), sentry_path)
-        result = self.login(steam, username, password)
-        if result != EResult.OK:
-            return
-        self.log.info(f'User {username}: Waiting to initialize the cdn client!')
-        cdn = self.retry(MyCDNClient, steam, retry_num=self.retry_num)
-        if not cdn:
-            logging.error(f'User {username}: Failed to initialize cdn!')
-            return
-        app_id_list = []
-        if cdn.packages_info:
-            self.log.info(f'User {username}: Waiting to get packages info!')
-            product_info = self.retry(steam.get_product_info, packages=cdn.packages_info, retry_num=self.retry_num)
-            if not product_info:
-                logging.error(f'User {username}: Failed to get packages info!')
-                return
-            if cdn.packages_info:
-                for package_id, info in product_info['packages'].items():
-                    if 'depotids' in info and info['depotids'] and info['billingtype'] in BillingType.PaidList:
-                        app_id_list.extend(list(info['appids'].values()))
-        self.log.info(f'User {username}: {len(app_id_list)} paid app found!')
-        if not app_id_list:
+        
+        # Handle cases where the account is disabled or requires two-factor authentication
+        elif result in (EResult.AccountLogonDenied, EResult.AccountDisabled,
+                        EResult.AccountLoginDeniedNeedTwoFactor, EResult.PasswordUnset):
+            logging.warning(f'User {username} has been disabled!')
             self.user_info[username]['enable'] = False
             self.user_info[username]['status'] = result
-            logging.warning(f'User {username}: Does not have any app and has been disabled!')
-            return
-        self.log.debug(f'User {username}, paid app id list: ' + ','.join([str(i) for i in app_id_list]))
-        self.log.info(f'User {username}: Waiting to get app info!')
-        fresh_resp = self.retry(steam.get_product_info, app_id_list, retry_num=self.retry_num)
-        if not fresh_resp:
-            logging.error(f'User {username}: Failed to get app info!')
-            return
-        job_list = []
-        flag = True
-        for app_id in app_id_list:
-            if self.update_app_id_list and int(app_id) not in self.update_app_id_list:
-                continue
-            with lock:
-                if int(app_id) in self.app_lock:
-                    continue
-                self.log.debug(f'Lock app: {app_id}')
-                self.app_lock[int(app_id)] = set()
-            app = fresh_resp['apps'][app_id]
-            if 'common' in app and app['common']['type'].lower() in ['game', 'dlc', 'application']:
-                if 'depots' not in fresh_resp['apps'][app_id]:
-                    continue
-                for depot_id, depot in fresh_resp['apps'][app_id]['depots'].items():
-                    with lock:
-                        self.app_lock[int(app_id)].add(depot_id)
-                    if 'manifests' in depot and 'public' in depot['manifests'] and int(
-                            depot_id) in {*cdn.licensed_depot_ids, *cdn.licensed_app_ids}:
-                        manifest_gid = depot['manifests']['public']
-                        self.set_depot_info(depot_id, manifest_gid)
-                        with lock:
-                            if int(app_id) not in self.user_info[username]['app']:
-                                self.user_info[username]['app'].append(int(app_id))
-                            if self.check_manifest_exist(depot_id, manifest_gid):
-                                self.log.info(f'Already got the manifest: {depot_id}_{manifest_gid}')
-                                continue
-                        flag = False
-                        job = gevent.Greenlet(LogExceptions(self.async_task), cdn, app_id, depot_id, manifest_gid)
-                        job.rawlink(
-                            functools.partial(self.get_manifest_callback, username, app_id, depot_id, manifest_gid))
-                        job_list.append(job)
-                        gevent.idle()
-                for job in job_list:
-                    job.start()
-            with lock:
-                if int(app_id) in self.app_lock and not self.app_lock[int(app_id)]:
-                    self.log.debug(f'Unlock app: {app_id}')
-                    self.app_lock.pop(int(app_id))
-        with lock:
-            if flag:
-                self.user_info[username]['update'] = int(time.time())
-        gevent.joinall(job_list)
+            break
+        
+        # Increment the wait time before the next retry and decrement the retry count
+        wait += 1
+        count -= 1
+        
+        # Log an error with the reason for the login failure
+        self.log.error(f'User {username}: Login failure reason: {result.__repr__()}')
+    
+    # Log a message if the login was successful
+    if result == EResult.OK:
+        self.log.info(f'User {username} login successfully!')
+    
+    # Log an error if the login was not successful
+    else:
+        self.log.error(f'User {username}: Login failure reason: {result.__repr__()}')
+    
+    # Return the result of the login attempt
+    return result
 
-    def run(self, update=False):
-        if not self.account_info or self.init_only:
-            self.save()
-            self.account_info.dump()
+    def get_manifest(self, username, password, sentry_name=None):
+    """
+    Retrieves the manifest for the specified user's Steam account.
+
+    This function handles the process of logging in to a Steam account, initializing the CDN client,
+    and fetching the manifest for the user's paid applications. It also manages the user's status and
+    updates the user_info dictionary accordingly.
+
+    Args:
+        username (str): The username of the Steam account.
+        password (str): The password of the Steam account.
+        sentry_name (str, optional): The name of the sentry file for the Steam account. Defaults to None.
+
+    Returns:
+        None
+    """
+    with lock:
+        # Initialize user information if it doesn't exist
+        if username not in self.user_info:
+            self.user_info[username] = {}
+            self.user_info[username]['app'] = []
+        
+        # Initialize update time if it doesn't exist
+        if 'update' not in self.user_info[username]:
+            self.user_info[username]['update'] = 0
+        
+        # Initialize enable status if it doesn't exist
+        if 'enable' not in self.user_info[username]:
+            self.user_info[username]['enable'] = True
+        
+        # Check if the user is disabled and log a warning if so
+        if not self.user_info[username]['enable']:
+            logging.warning(f'User {username} is disabled!')
             return
-        if update and not self.update_user_list:
-            self.update()
-            if not self.update_user_list:
-                return
-        with Pool(self.pool_num) as pool:
-            pool: ThreadPool
-            result_list = []
-            for username in self.account_info:
-                if self.update_user_list and username not in self.update_user_list:
-                    self.log.debug(f'User {username} has skipped the update!')
-                    continue
-                password, sentry_name = self.account_info[username]
-                result_list.append(
-                    pool.apply_async(LogExceptions(self.get_manifest), (username, password, sentry_name)))
-            try:
-                while pool._state == 'RUN':
-                    if all([result.ready() for result in result_list]):
-                        self.log.info('The program is finished and will exit in 10 seconds!')
-                        time.sleep(10)
-                        break
-                    self.save()
-                    time.sleep(1)
-            except KeyboardInterrupt:
+    
+    # Calculate the time until the next update and log a warning if it's not time yet
+    t = self.user_info[username]['update'] + self.update_wait_time - time.time()
+    if t > 0:
+        logging.warning(f'User {username} interval from next update: {int(t)}s!')
+        return
+    
+    # Determine the path to the sentry file if provided
+    sentry_path = None
+    if sentry_name:
+        sentry_path = Path(
+            self.credential_location if self.credential_location else MySteamClient.credential_location) / sentry_name
+    
+    self.log.debug(f'User {username} sentry_path: {sentry_path}')
+    
+    # Initialize the Steam client with the sentry path
+    steam = MySteamClient(str(self.credential_location), sentry_path)
+    
+    # Attempt to log in the user
+    result = self.login(steam, username, password)
+    
+    # Return if the login was not successful
+    if result != EResult.OK:
+        return
+    
+    self.log.info(f'User {username}: Waiting to initialize the cdn client!')
+    
+    # Initialize the CDN client with retries
+    cdn = self.retry(MyCDNClient, steam, retry_num=self.retry_num)
+    
+    # Log an error and return if the CDN client initialization failed
+    if not cdn:
+        logging.error(f'User {username}: Failed to initialize cdn!')
+        return
+    
+    app_id_list = []
+    
+    # Fetch packages information if available
+    if cdn.packages_info:
+        self.log.info(f'User {username}: Waiting to get packages info!')
+        product_info = self.retry(steam.get_product_info, packages=cdn.packages_info, retry_num=self.retry_num)
+        
+        # Log an error and return if fetching packages info failed
+        if not product_info:
+            logging.error(f'User {username}: Failed to get packages info!')
+            return
+        
+        # Collect app IDs for paid packages
+        if cdn.packages_info:
+            for package_id, info in product_info['packages'].items():
+                if 'depotids' in info and info['depotids'] and info['billingtype'] in BillingType.PaidList:
+                    app_id_list.extend(list(info['appids'].values()))
+    
+    self.log.info(f'User {username}: {len(app_id_list)} paid app found!')
+    
+    # Disable the user if no paid apps were found
+    if not app_id_list:
+        self.user_info[username]['enable'] = False
+        self.user_info[username]['status'] = result
+        logging.warning(f'User {username}: Does not have any app and has been disabled!')
+        return
+    
+    self.log.debug(f'User {username}, paid app id list: ' + ','.join([str(i) for i in app_id_list]))
+    
+    self.log.info(f'User {username}: Waiting to get app info!')
+    
+    # Fetch detailed information for the collected app IDs
+    fresh_resp = self.retry(steam.get_product_info, app_id_list, retry_num=self.retry_num)
+    
+    # Log an error and return if fetching app info failed
+    if not fresh_resp:
+        logging.error(f'User {username}: Failed to get app info!')
+        return
+    
+    job_list = []
+    flag = True
+    
+    # Iterate over the app IDs to fetch manifests
+    for app_id in app_id_list:
+        if self.update_app_id_list and int(app_id) not in self.update_app_id_list:
+            continue
+        
+        with lock:
+            if int(app_id) in self.app_lock:
+                continue
+            self.log.debug(f'Lock app: {app_id}')
+            self.app_lock[int(app_id)] = set()
+        
+        app = fresh_resp['apps'][app_id]
+        
+        # Check if the app type is one of the supported types (game, DLC, application)
+        if 'common' in app and app['common']['type'].lower() in ['game', 'dlc', 'application']:
+            if 'depots' not in fresh_resp['apps'][app_id]:
+                continue
+            
+            # Iterate over the depots to fetch manifests
+            for depot_id, depot in fresh_resp['apps'][app_id]['depots'].items():
                 with lock:
-                    pool.terminate()
-                os._exit(0)
-            finally:
-                self.save()
+                    self.app_lock[int(app_id)].add(depot_id)
+                
+                if 'manifests' in depot and 'public' in depot['manifests'] and int(
+                        depot_id) in {*cdn.licensed_depot_ids, *cdn.licensed_app_ids}:
+                    manifest_gid = depot['manifests']['public']
+                    self.set_depot_info(depot_id, manifest_gid)
+                    
+                    with lock:
+                        if int(app_id) not in self.user_info[username]['app']:
+                            self.user_info[username]['app'].append(int(app_id))
+                        
+                        if self.check_manifest_exist(depot_id, manifest_gid):
+                            self.log.info(f'Already got the manifest: {depot_id}_{manifest_gid}')
+                            continue
+                    
+                    flag = False
+                    
+                    # Create a greenlet job to fetch the manifest asynchronously
+                    job = gevent.Greenlet(LogExceptions(self.async_task), cdn, app_id, depot_id, manifest_gid)
+                    job.rawlink(
+                        functools.partial(self.get_manifest_callback, username, app_id, depot_id, manifest_gid))
+                    job_list.append(job)
+                    gevent.idle()
+            
+            # Start all greenlet jobs
+            for job in job_list:
+                job.start()
+        
+        with lock:
+            if int(app_id) in self.app_lock and not self.app_lock[int(app_id)]:
+                self.log.debug(f'Unlock app: {app_id}')
+                self.app_lock.pop(int(app_id))
+    
+    with lock:
+        if flag:
+            self.user_info[username]['update'] = int(time.time())
+    
+    # Wait for all greenlet jobs to complete
+    gevent.joinall(job_list)
 
     def update(self):
-        app_id_list = []
-        for user, info in self.user_info.items():
-            if info['enable']:
-                if info['app']:
-                    app_id_list.extend(info['app'])
-        app_id_list = list(set(app_id_list))
-        logging.debug(app_id_list)
-        steam = MySteamClient(str(self.credential_location))
-        self.log.info('Logging in to anonymous!')
-        steam.anonymous_login()
-        self.log.info('Waiting to get all app info!')
-        app_info_dict = {}
-        count = 0
-        while app_id_list[count:count + 300]:
-            fresh_resp = self.retry(steam.get_product_info, app_id_list[count:count + 300],
-                                    retry_num=self.retry_num, timeout=60)
-            count += 300
-            if fresh_resp:
-                for app_id, info in fresh_resp['apps'].items():
-                    if depots := info.get('depots'):
-                        app_info_dict[int(app_id)] = depots
-                self.log.info(f'Acquired {len(app_info_dict)} app info!')
-        update_app_set = set()
-        for app_id, app_info in app_info_dict.items():
-            for depot_id, depot in app_info.items():
-                if depot_id.isdecimal():
-                    if manifests := depot.get('manifests'):
-                        if manifest := manifests.get('public'):
-                            if depot_id in self.app_info and self.app_info[depot_id] != manifest:
-                                update_app_set.add(app_id)
-        update_app_user = {}
-        update_user_set = set()
-        for user, info in self.user_info.items():
-            if info['enable'] and info['app']:
-                for app_id in info['app']:
-                    if int(app_id) in update_app_set:
-                        if int(app_id) not in update_app_user:
-                            update_app_user[int(app_id)] = []
-                        update_app_user[int(app_id)].append(user)
-                        update_user_set.add(user)
-        self.log.debug(str(update_app_user))
-        for user in self.account_info:
-            if user not in self.user_info:
-                update_user_set.add(user)
-        self.update_user_list.extend(list(update_user_set))
-        for app_id, user_list in update_app_user.items():
-            self.log.info(f'{app_id}: {",".join(user_list)}')
-        self.log.info(f'{len(update_app_user)} app and {len(self.update_user_list)} users need to update!')
-        return self.update_user_list
+    """
+    Updates the list of users and applications that need to be updated.
+
+    This function identifies which users and applications require updates by checking the current state
+    of the application manifests against the latest available manifests. It then updates the internal
+    data structures to reflect which users and applications need to be processed during the next run.
+
+    Returns:
+        list: A list of usernames that need to be updated.
+    """
+    app_id_list = []
+    
+    # Collect all app IDs for users that are enabled
+    for user, info in self.user_info.items():
+        if info['enable']:
+            if info['app']:
+                app_id_list.extend(info['app'])
+    
+    # Remove duplicates from the app ID list
+    app_id_list = list(set(app_id_list))
+    
+    logging.debug(app_id_list)
+    
+    # Initialize the Steam client for anonymous login
+    steam = MySteamClient(str(self.credential_location))
+    
+    self.log.info('Logging in to anonymous!')
+    
+    # Perform anonymous login
+    steam.anonymous_login()
+    
+    self.log.info('Waiting to get all app info!')
+    
+    app_info_dict = {}
+    count = 0
+    
+    # Fetch detailed information for the collected app IDs in chunks
+    while app_id_list[count:count + 300]:
+        fresh_resp = self.retry(steam.get_product_info, app_id_list[count:count + 300],
+                                retry_num=self.retry_num, timeout=60)
+        count += 300
+        
+        if fresh_resp:
+            for app_id, info in fresh_resp['apps'].items():
+                if depots := info.get('depots'):
+                    app_info_dict[int(app_id)] = depots
+            self.log.info(f'Acquired {len(app_info_dict)} app info!')
+    
+    update_app_set = set()
+    
+    # Identify which apps need to be updated by comparing current manifests with the latest available
+    for app_id, app_info in app_info_dict.items():
+        for depot_id, depot in app_info.items():
+            if depot_id.isdecimal():
+                if manifests := depot.get('manifests'):
+                    if manifest := manifests.get('public'):
+                        if depot_id in self.app_info and self.app_info[depot_id] != manifest:
+                            update_app_set.add(app_id)
+    
+    update_app_user = {}
+    update_user_set = set()
+    
+    # Map apps that need updating to the users who have them
+    for user, info in self.user_info.items():
+        if info['enable'] and info['app']:
+            for app_id in info['app']:
+                if int(app_id) in update_app_set:
+                    if int(app_id) not in update_app_user:
+                        update_app_user[int(app_id)] = []
+                    update_app_user[int(app_id)].append(user)
+                    update_user_set.add(user)
+    
+    self.log.debug(str(update_app_user))
+    
+    # Add users who need to be updated to the update_user_list
+    for user in self.account_info:
+        if user not in self.user_info:
+            update_user_set.add(user)
+    
+    self.update_user_list.extend(list(update_user_set))
+    
+    # Log the apps and users that need to be updated
+    for app_id, user_list in update_app_user.items():
+        self.log.info(f'{app_id}: {",".join(user_list)}')
+    
+    self.log.info(f'{len(update_app_user)} app and {len(self.update_user_list)} users need to update!')
+    
+    return self.update_user_list
 
 
 if __name__ == '__main__':
